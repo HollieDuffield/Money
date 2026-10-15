@@ -410,6 +410,7 @@ table.hgrid{border-collapse:separate;border-spacing:4px}
 .catrow .emo{text-align:center;padding:6px 4px}
 .catrow .lim{text-align:right}
 .catrow span.lim{font-size:11.5px}
+.spark{width:100%;height:42px;display:block;margin:6px 0 8px}
 </style>
 </head>
 <body>
@@ -524,9 +525,10 @@ const DEF={
   budget:{income:[]},
   bills:{list:[]},
   pots:{list:[]},
-  debts:{list:[]}
+  debts:{list:[]},
+  accounts:{list:[]}
 };
-const SECS=[['income','Income','Everything coming in this month'],['bills','Bills','Rent, energy, phone and the other fixed costs'],['subs','Subscriptions','Streaming, apps and memberships'],['savings','Savings & goals','Tick when paid to grow your goals'],['sinking','Sinking funds','Tick when paid to top up your pots'],['debts','Debt payments','Tick when paid to bring the balance down'],['limits','Spending limits','What you plan to spend in each category']];
+const SECS=[['income','Income','Everything coming in this month'],['bills','Bills','Rent, energy, phone and the other fixed costs'],['subs','Subscriptions','Streaming, apps and memberships'],['savings','Savings & goals','Tick when paid to grow your goals'],['sinking','Sinking funds','Tick when paid to top up your pots'],['invest','Investing & accounts','Tick when paid in to add it to the account'],['debts','Debt payments','Tick when paid to bring the balance down'],['limits','Spending limits','What you plan to spend in each category']];
 const FREQ={weekly:['Weekly',52/12,7],fortnightly:['Every 2 weeks',26/12,14],fourweekly:['Every 4 weeks',13/12,28],monthly:['Monthly',1,1],quarterly:['Quarterly',1/3,3],yearly:['Yearly',1/12,12]};
 const BUILTIN=[
  ['subs',/netflix|spotify|disney|prime video|amazon prime|primevideo|apple\.com|itunes|icloud|youtube|now tv|nowtv|audible|chatgpt|openai|anthropic|claude\.ai|patreon|xbox|playstation|adobe|microsoft|google storage|google one|canva|duolingo|headspace/],
@@ -673,23 +675,33 @@ function debtPaid(d,upto){let s=0;const st=d.startT||0;for(const e of paidEntrie
 const debtBal=(d,upto)=>Math.max(0,round(num(d.start)-debtPaid(d,upto),2));
 function payoff(bal,apr,pay){if(bal<=0)return {n:0,interest:0};const i=num(apr)/1200;pay=num(pay);if(pay<=0)return null;if(i===0)return {n:Math.ceil(bal/pay),interest:0};if(pay<=bal*i)return null;const n=Math.ceil(-Math.log(1-i*bal/pay)/Math.log(1+i));return {n,interest:Math.max(0,n*pay-bal)};}
 const pots=()=>D('pots').list.filter(p=>!p.until||p.until>=curMonth());
+const ATYPES={cash:['Cash savings','🏦'],isa:['Cash ISA','🔒'],sisa:['Stocks & shares ISA','📈'],invest:['Investments','📊'],shares:['Work shares','🏢'],pension:['Pension','🌱'],crypto:['Crypto','🪙'],other:['Other','💼']};
+const accounts=()=>D('accounts').list.filter(a=>!a.until||a.until>=curMonth());
+const live=(x,mk)=>!x.until||mk<=x.until;
+function lastSnap(a,upto){const end=upto?upto+'-31':'9999';let best=null;for(const s of (a.history||[]))if(s.date<=end&&(!best||s.date>best.date||(s.date===best.date&&(s.t||0)>(best.t||0))))best=s;return best;}
+function accContribs(a,upto){const out=paidEntries('a:'+a.id).map(e=>({amt:e.a,t:e.t,mk:e.mk}));for(const c of (a.contrib||[]))out.push({amt:num(c.amt),t:c.t||0,mk:monthKey(c.date)});return upto?out.filter(c=>c.mk<=upto):out;}
+function accValue(a,upto){const sn=lastSnap(a,upto);if(!sn)return 0;let v=num(sn.value);for(const c of accContribs(a,upto))if(c.t>(sn.t||0))v+=c.amt;return round(v,2);}
+function accPaidIn(a){if(a.startPaid===''||a.startPaid==null)return null;return round(num(a.startPaid)+accContribs(a).reduce((s,c)=>s+c.amt,0),2);}
+const accUpdated=a=>{const sn=lastSnap(a);return sn?sn.date:null;};
+const potsFree=()=>{const ids=new Set(D('accounts').list.map(a=>a.id));return pots().filter(p=>!p.acct||!ids.has(p.acct));};
 const debts=()=>D('debts').list.filter(d=>!d.until||d.until>=curMonth());
 
 /* budget */
 function monthPlan(mk){
   const mo=(DOCS['mo-'+mk]||{data:{}}).data, ov=mo.amt||{}, paid=mo.paid||{}, skip=mo.skip||{};
   const L=(key,name,amt,extra)=>Object.assign({key,name,base:amt,amt:ov[key]!=null?num(ov[key]):amt,paid:paid[key]||null},extra);
-  const P={income:[],bills:[],subs:[],savings:[],sinking:[],debts:[],limits:[]};
+  const P={income:[],bills:[],subs:[],savings:[],sinking:[],invest:[],debts:[],limits:[]};
   for(const i of D('budget').income)if(act(i,mk)&&!skip['i:'+i.id])P.income.push(L('i:'+i.id,i.name,num(i.amt),{ref:i,kind:'income',tick:true}));
   for(const b of D('bills').list){if(skip['b:'+b.id])continue;const ds=billDates(b,mk);if(!ds.length)continue;(b.type==='sub'?P.subs:P.bills).push(L('b:'+b.id,b.name,round(num(b.amt)*ds.length,2),{ref:b,kind:'bill',tick:true,sub:ds.map(d=>ordinal(parseKey(d).getDate())).join(', ')}));}
   for(const p of D('pots').list)if(act(p,mk)&&num(p.monthly)>0&&!skip['p:'+p.id])(p.type==='sinking'?P.sinking:P.savings).push(L('p:'+p.id,p.name,num(p.monthly),{ref:p,kind:'pot',tick:true,emoji:p.emoji}));
+  for(const a of D('accounts').list)if(act(a,mk)&&num(a.monthly)>0&&!skip['a:'+a.id])P.invest.push(L('a:'+a.id,a.name,num(a.monthly),{ref:a,kind:'acct',tick:true,emoji:(ATYPES[a.type]||ATYPES.other)[1]}));
   for(const d of D('debts').list)if(act(d,mk)&&num(d.min)>0&&!skip['d:'+d.id])P.debts.push(L('d:'+d.id,d.name,num(d.min),{ref:d,kind:'debt',tick:true}));
   const sp=monthSpend(mk);
   for(const c of spendCats())if(num(c.limit)>0)P.limits.push(L('c:'+c.id,c.name,num(c.limit),{ref:c,kind:'limit',emoji:c.emoji,spent:sp.by[c.id]||0}));
   for(const e of (mo.extra||[]))if(P[e.sec])P[e.sec].push(L('x:'+e.id,e.name,num(e.amt),{ref:e,kind:'extra',tick:e.sec!=='limits'}));
   const sum=a=>a.reduce((s,x)=>s+x.amt,0);
   P.tot={};for(const k in P)if(k!=='tot')P.tot[k]=sum(P[k]);
-  P.out=P.tot.bills+P.tot.subs+P.tot.savings+P.tot.sinking+P.tot.debts+P.tot.limits;
+  P.out=P.tot.bills+P.tot.subs+P.tot.savings+P.tot.sinking+P.tot.invest+P.tot.debts+P.tot.limits;
   P.left=P.tot.income-P.out;
   P.spent=sp.total;P.limitSpent=P.limits.reduce((s,x)=>s+(x.spent||0),0);
   return P;
@@ -806,7 +818,7 @@ const UI={view:'overview',mk:curMonth()};
 try{const u=JSON.parse(localStorage.getItem('mn_ui')||'{}');if(u.view)UI.view=u.view;}catch(e){}
 function saveUI(){try{localStorage.setItem('mn_ui',JSON.stringify({view:UI.view}));}catch(e){}}
 let SH=null, pendingRender=false;
-const NAV=[['Money',[['overview','Overview'],['budget','Budget'],['spending','Spending'],['bills','Bills & subscriptions']]],['Grow',[['savings','Savings & goals'],['debts','Debts'],['insights','Insights']]]];
+const NAV=[['Money',[['overview','Overview'],['budget','Budget'],['spending','Spending'],['bills','Bills & subscriptions']]],['Grow',[['savings','Savings & goals'],['accounts','Accounts & investments'],['debts','Debts'],['insights','Insights']]]];
 function navHtml(){
   return `<div class="brand"><span class="brand-mark" aria-hidden="true">✦</span>${esc(S().appName||'My Money')}</div>`+
   NAV.map(([g,items])=>`<div class="ng"><div class="ngl">${g}</div>${items.map(([id,l])=>`<button class="ni ${UI.view===id?'on':''}" data-a="go" data-v="${id}">${l}</button>`).join('')}</div>`).join('')+
@@ -865,11 +877,11 @@ function catBars(by,limits){
 }
 
 /* ================= OVERVIEW ================= */
-function netWorthAt(mk){let s=0,d=0;for(const p of D('pots').list)s+=potBal(p,mk);for(const x of D('debts').list)d+=debtBal(x,mk);return {s,d,n:s-d};}
+function netWorthAt(mk){let s=0,d=0;const ids=new Set(D('accounts').list.map(a=>a.id));for(const p of D('pots').list)if(live(p,mk)&&(!p.acct||!ids.has(p.acct)))s+=potBal(p,mk);for(const a of D('accounts').list)if(live(a,mk))s+=accValue(a,mk);for(const x of D('debts').list)if(live(x,mk))d+=debtBal(x,mk);return {s,d,n:s-d};}
 function vOverview(){
   const t=todayKey(),cm=curMonth(),s=S(),P=monthPlan(cm),sp=monthSpend(cm),lm=monthSpend(addMonths(cm,-1));
   const pd=nextPayday(),days=diffDays(t,pd);
-  const saved=pots().reduce((a,p)=>a+potBal(p),0), owed=debts().reduce((a,d)=>a+debtBal(d),0);
+  const saved=potsFree().reduce((a,p)=>a+potBal(p),0)+accounts().reduce((a,x)=>a+accValue(x),0), owed=debts().reduce((a,d)=>a+debtBal(d),0);
   const hasLimits=P.limits.length, left=P.tot.limits-P.limitSpent;
   const unpaid=[...P.bills,...P.subs].filter(x=>!x.paid).reduce((a,x)=>a+x.amt,0);
   const hr=new Date().getHours(), greet=(hr<12?'Good morning':hr<18?'Good afternoon':'Good evening')+(s.name?', '+esc(s.name):'');
@@ -880,7 +892,7 @@ function vOverview(){
   const diff=sp.total-lm.total;
   return ph(greet,'Your money at a glance')
   +`<section class="card payday"><div><div class="lbl">Next payday</div><h3>${fmtLong(pd)}</h3></div><div class="pd-n"><b>${days}</b><small>${days===1?'day to go':'days to go'}</small></div></section>`
-  +`<div class="stats">${hasLimits?stat('Left to spend',mt(left),`of ${mt(P.tot.limits)} this month`,true):stat('Spent this month',mt(sp.total),MONTHS[+cm.slice(5)-1],true)}${hasLimits?stat('Spent this month',mt(sp.total),lm.total?`${diff>=0?'↑':'↓'} ${mt(Math.abs(diff))} vs last month`:''):stat('Bills left to pay',mt(unpaid),'this month')}${stat('Total saved',mt(saved),plural(pots().length,'pot'))}${stat('Total debt',mt(owed),owed?'remaining':'debt-free')}</div>`
+  +`<div class="stats">${hasLimits?stat('Left to spend',mt(left),`of ${mt(P.tot.limits)} this month`,true):stat('Spent this month',mt(sp.total),MONTHS[+cm.slice(5)-1],true)}${hasLimits?stat('Spent this month',mt(sp.total),lm.total?`${diff>=0?'↑':'↓'} ${mt(Math.abs(diff))} vs last month`:''):stat('Bills left to pay',mt(unpaid),'this month')}${stat('Savings & investments',mt(saved),accounts().length?plural(accounts().length,'account'):plural(pots().length,'pot'))}${stat('Total debt',mt(owed),owed?'remaining':'debt-free')}</div>`
   +(review?`<button class="banner" data-a="spendFilter" data-v="review"><b>${review}</b> transaction${review===1?' needs':'s need'} a category. Tap to sort them.</button>`:'')
   +`<div class="cards">`
   +card('Where it went',catBars(sp.by),`<button class="link" data-a="go" data-v="spending">Spending</button>`)
@@ -953,7 +965,7 @@ function vBills(){
 function potCard(p){
   const bal=potBal(p),tg=num(p.target),togo=Math.max(0,tg-bal);
   let need='';if(tg&&p.date&&togo>0){const m=Math.max(1,monthsBetween(curMonth(),monthKey(p.date)));need=`Save ${money(togo/m)} a month to reach it by ${fmtShort(p.date)}`;}
-  return `<section class="card pot"><div class="card-h"><h3>${esc(p.emoji||'')} ${esc(p.name)}</h3><button class="link sm" data-a="potEdit" data-id="${p.id}">Edit</button></div><div class="wstat"><b>${money(bal)}</b>${tg?`<span class="muted">of ${mt(tg)}</span>`:''}</div>${tg?`${bar(bal/tg*100)}<div class="kv" style="margin-top:6px"><span>${togo?money(togo)+' to go':'Target reached 🎉'}</span><span>${Math.min(100,Math.round(bal/tg*100))}%</span></div>`:''}${need?`<p class="hint" style="margin:6px 0 0">${need}</p>`:''}<div class="kv" style="margin-top:8px"><span>Each month</span><b>${num(p.monthly)?money(p.monthly):'–'}</b></div><div style="display:flex;gap:8px;margin-top:12px"><button class="btn sm soft" data-a="potAdj" data-id="${p.id}" data-dir="1">Add money</button><button class="btn sm" data-a="potAdj" data-id="${p.id}" data-dir="-1">Take out</button></div></section>`;
+  return `<section class="card pot"><div class="card-h"><h3>${esc(p.emoji||'')} ${esc(p.name)}</h3><button class="link sm" data-a="potEdit" data-id="${p.id}">Edit</button></div><div class="wstat"><b>${money(bal)}</b>${tg?`<span class="muted">of ${mt(tg)}</span>`:''}</div>${tg?`${bar(bal/tg*100)}<div class="kv" style="margin-top:6px"><span>${togo?money(togo)+' to go':'Target reached 🎉'}</span><span>${Math.min(100,Math.round(bal/tg*100))}%</span></div>`:''}${need?`<p class="hint" style="margin:6px 0 0">${need}</p>`:''}${p.acct&&D('accounts').list.find(a=>a.id===p.acct)?`<p class="hint" style="margin:6px 0 0">Held in ${esc(D('accounts').list.find(a=>a.id===p.acct).name)}</p>`:''}<div class="kv" style="margin-top:8px"><span>Each month</span><b>${num(p.monthly)?money(p.monthly):'–'}</b></div><div style="display:flex;gap:8px;margin-top:12px"><button class="btn sm soft" data-a="potAdj" data-id="${p.id}" data-dir="1">Add money</button><button class="btn sm" data-a="potAdj" data-id="${p.id}" data-dir="-1">Take out</button></div></section>`;
 }
 function vSavings(){
   const P=pots(),g=P.filter(p=>p.type!=='sinking'),s=P.filter(p=>p.type==='sinking');
@@ -989,7 +1001,7 @@ function vInsights(){
   const top=Object.entries(merch).sort((a,b)=>b[1]-a[1]).slice(0,8);
   const avgBy={};full.forEach(f=>Object.entries(f.by).forEach(([k,v])=>avgBy[k]=(avgBy[k]||0)+v/3));
   const avgRows=Object.entries(avgBy).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="kv"><span>${catLabel(k==='none'?'':k)}</span><b>${money(v)}</b></div>`).join('');
-  const P=monthPlan(cm),rate=P.tot.income?Math.round((P.tot.savings+P.tot.sinking)/P.tot.income*100):null;
+  const P=monthPlan(cm),rate=P.tot.income?Math.round((P.tot.savings+P.tot.sinking+P.tot.invest)/P.tot.income*100):null;
   const avg12=tots.filter(v=>v>0);
   return ph('Insights','See where your money is going')
   +`<div class="stats">${stat('Average month',avg12.length?mt(avg(avg12)):'–','spending, last 12 months')}${stat('This month',mt(cur.total),'so far')}${stat('Saving rate',rate==null?'–':rate+'%','of income, planned',true)}${stat('Biggest category',(()=>{const e=Object.entries(cur.by).sort((a,b)=>b[1]-a[1])[0];return e?(catOf(e[0])?catOf(e[0]).emoji:'❓'):'–';})(),(()=>{const e=Object.entries(cur.by).sort((a,b)=>b[1]-a[1])[0];return e?catLabel(e[0]==='none'?'':e[0]).replace(/^\S+\s/,'')+' · '+money(e[1]):'';})())}</div>`
@@ -1018,7 +1030,32 @@ function vSettings(){
   }
   return ph('Customise','Make it yours')+seg('setTab',tab,[['money','Money'],['cats','Categories'],['look','How it looks'],['data','Sync & backup']])+`<div class="cards">${body}</div>`;
 }
-const VIEWS={overview:vOverview,budget:vBudget,spending:vSpending,bills:vBills,savings:vSavings,debts:vDebts,insights:vInsights,settings:vSettings};
+
+/* ================= ACCOUNTS ================= */
+function spark(vals){if(vals.length<2)return '';const W=200,H=40,mn=Math.min(...vals),mx=Math.max(...vals),sp=mx-mn||1;const pts=vals.map((v,i)=>`${(i/(vals.length-1)*W).toFixed(1)},${(H-4-(v-mn)/sp*(H-8)).toFixed(1)}`).join(' ');return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;}
+function gainTxt(g,base){if(g==null)return '';const pct=base?round(g/base*100,1):null;return `<span class="${g>=0?'pos':'over'}">${g>=0?'+':'−'}${money(Math.abs(g))}${pct!=null?` (${g>=0?'+':'−'}${Math.abs(pct)}%)`:''}</span>`;}
+function vAccounts(){
+  const L=accounts(),cm=curMonth(),t=todayKey();
+  const add=`<button class="btn primary" data-a="accNew">+ Add account</button>`;
+  if(!L.length)return ph('Accounts & investments','',add)+`<div class="empty"><p>Add every place your money lives: savings accounts, ISAs, investment platforms, work share schemes and pensions. Update the values now and then, and see how it all grows.</p><button class="btn soft" data-a="accNew">Add your first account</button></div>`;
+  const tot=L.reduce((s,a)=>s+accValue(a),0);
+  const wp=L.filter(a=>accPaidIn(a)!=null),paid=wp.reduce((s,a)=>s+accPaidIn(a),0),valP=wp.reduce((s,a)=>s+accValue(a),0),gain=valP-paid;
+  const mon=L.reduce((s,a)=>s+num(a.monthly),0);
+  const months=[...Array(12)].map((_,i)=>addMonths(cm,i-11));let started=false;
+  const ser=months.map(m=>{const v=round(L.reduce((s,a)=>s+accValue(a,m),0),2);if(v)started=true;return started?v:null;});
+  const by={};L.forEach(a=>{const k=a.type||'other';by[k]=(by[k]||0)+accValue(a);});
+  const types=Object.entries(by).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="cbar"><span class="cb-h"><span>${(ATYPES[k]||ATYPES.other)[1]} ${(ATYPES[k]||ATYPES.other)[0]}</span><b>${money(v)} <small class="muted">${tot?Math.round(v/tot*100):0}%</small></b></span>${bar(tot?v/tot*100:0)}</div>`).join('');
+  const cards=L.slice().sort((a,b)=>accValue(b)-accValue(a)).map(a=>{
+    const v=accValue(a),pi=accPaidIn(a),g=pi!=null?v-pi:null,up=accUpdated(a),stale=up&&diffDays(up,t)>45,ty=ATYPES[a.type]||ATYPES.other;
+    const hist=(a.history||[]).slice().sort((x,y)=>x.date<y.date?-1:x.date>y.date?1:(x.t||0)-(y.t||0)).slice(-12).map(x=>num(x.value));if(hist.length&&round(hist[hist.length-1],2)!==v)hist.push(v);
+    return `<section class="card acct"><div class="card-h"><h3>${ty[1]} ${esc(a.name)}</h3><button class="link sm" data-a="accEdit" data-id="${a.id}">Edit</button></div><p class="muted" style="font-size:13px;margin-top:-6px">${esc(ty[0])}${a.provider?' · '+esc(a.provider):''}</p><div class="wstat" style="margin-top:8px"><b>${money(v)}</b>${g!=null?gainTxt(g,pi):''}</div>${spark(hist)}${pi!=null?`<div class="kv"><span>Paid in</span><b>${money(pi)}</b></div>`:''}${num(a.monthly)?`<div class="kv"><span>Each month</span><b>${money(a.monthly)}</b></div>`:''}<div class="kv"><span>Value updated</span><b class="${stale?'over':''}">${up?(up===t?'Today':fmtShort(up)+(stale?' · update due':'')):'Never'}</b></div><div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn sm soft" data-a="accVal" data-id="${a.id}">Update value</button><button class="btn sm" data-a="accMoney" data-id="${a.id}" data-dir="1">Pay in</button><button class="btn sm" data-a="accMoney" data-id="${a.id}" data-dir="-1">Take out</button></div></section>`;}).join('');
+  return ph('Accounts & investments','Everywhere your money lives',add)
+  +`<div class="stats">${stat('Total worth',mt(tot),plural(L.length,'account'),true)}${stat('Paid in',wp.length?mt(paid):'–',wp.length?(wp.length<L.length?`${wp.length} of ${L.length} accounts`:'by you'):'add it to see growth')}${stat('Growth',wp.length?`${gain>=0?'+':'−'}${mt(Math.abs(gain))}`:'–',wp.length&&paid?`${gain>=0?'+':'−'}${Math.abs(round(gain/paid*100,1))}% overall`:'')}${stat('Going in',mt(mon),'every month')}</div>`
+  +`<div class="cards">${card('Worth over the last year',lineChart(ser,months.map((m,i)=>i%2===1?MON[+m.slice(5)-1]:'')))}${card('By type',types)}${cards}</div>`
+  +`<p class="hint" style="text-align:center">Update investment values whenever you check them, about once a month is plenty. Money you pay in, or tick off in your budget, is added straight away.</p>`;
+}
+
+const VIEWS={overview:vOverview,accounts:vAccounts,budget:vBudget,spending:vSpending,bills:vBills,savings:vSavings,debts:vDebts,insights:vInsights,settings:vSettings};
 
 /* ================= sheets ================= */
 function openSheet(st){SH=st;drawSheet(true);}
@@ -1032,7 +1069,7 @@ function drawSheet(first){
   $('#shT').textContent=r.title;
   const b=$('.sheet-body',el), sc=b.scrollTop;b.innerHTML=r.body;b.scrollTop=sc;
   const f=$('.sheet-foot',el);f.innerHTML=r.foot||'';f.hidden=!r.foot;
-  if(first)setTimeout(()=>{const a=el.querySelector('[autofocus]');if(a&&window.matchMedia('(min-width:700px)').matches)a.focus();},60);
+  if(first)setTimeout(()=>{const a=el.querySelector('[autofocus]');if(a&&window.matchMedia&&window.matchMedia('(min-width:700px)').matches)a.focus();},60);
 }
 function closeSheet(){const el=$('#sheet');el.classList.remove('open');el.innerHTML='';SH=null;document.body.classList.remove('noscroll');render();}
 function liveSheet(st){st.refresh=()=>drawSheet(false);openSheet(st);}
@@ -1102,6 +1139,7 @@ function potSheet(id,type,mk){
   <div class="frow3"><label class="field"><span>Name</span><input class="in" value="${esc(p.name)}" data-bind="p.name" placeholder="${p.type==='sinking'?'e.g. Christmas':'e.g. Emergency fund'}" autofocus></label><label class="field" style="width:76px"><span>Emoji</span><input class="in" value="${esc(p.emoji||'')}" data-bind="p.emoji" maxlength="4"></label></div>
   <div class="frow"><label class="field"><span>${id?'Balance now':'Already saved'}</span><input class="in" inputmode="decimal" value="${esc(p.bal)}" data-bind="p.bal"></label><label class="field"><span>Target (optional)</span><input class="in" inputmode="decimal" value="${esc(p.target)}" data-bind="p.target"></label></div>
   <div class="frow"><label class="field"><span>Put in each month</span><input class="in" inputmode="decimal" value="${esc(p.monthly)}" data-bind="p.monthly"></label><label class="field"><span>Target date (optional)</span><input class="in" type="date" value="${p.date||''}" data-bind="p.date"></label></div>
+  ${D('accounts').list.length?`<label class="field"><span>Held in (optional)</span><select class="in" data-bind="p.acct"><option value="">Not linked</option>${accounts().map(a=>`<option value="${a.id}" ${p.acct===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</select></label><p class="hint">Linking a pot to the account it sits in stops that money being counted twice in your net worth.</p>`:''}
   <p class="hint">The monthly amount appears in your budget to tick off.</p>`,foot:foot('potSave',id?`<button class="btn danger" data-a="potDel">Delete</button>${skipBtn('p:'+id)}`:'')};}});
 }
 function debtSheet(id,mk){
@@ -1110,12 +1148,35 @@ function debtSheet(id,mk){
   openSheet({kind:'debt',id,mk,d:st,draw(){const d=this.d;return {title:id?'Edit debt':'Add a debt',body:`<div class="frow"><label class="field"><span>Name</span><input class="in" value="${esc(d.name)}" data-bind="d.name" placeholder="e.g. Amex" autofocus></label><label class="field"><span>Type</span><input class="in" value="${esc(d.type||'')}" data-bind="d.type" list="dtypes"><datalist id="dtypes"><option value="Credit card"><option value="Loan"><option value="Car finance"><option value="Student loan"><option value="Overdraft"><option value="Buy now, pay later"></datalist></label></div>
   <div class="frow"><label class="field"><span>Balance now</span><input class="in" inputmode="decimal" value="${esc(d.bal)}" data-bind="d.bal"></label><label class="field"><span>Interest rate (APR %)</span><input class="in" inputmode="decimal" value="${esc(d.apr)}" data-bind="d.apr"></label><label class="field"><span>Paying each month</span><input class="in" inputmode="decimal" value="${esc(d.min)}" data-bind="d.min"></label></div>`,foot:foot('debtSave',id?`<button class="btn danger" data-a="debtDel">Delete</button>${skipBtn('d:'+id)}`:'')};}});
 }
+
+/* accounts */
+const PROVIDERS=['Lloyds','Trading 212','Cynergy Bank','eToro','J.P. Morgan Personal Investing','Equiniti (EQ)','Vanguard','Chip','Moneybox','Nutmeg','Hargreaves Lansdown','AJ Bell','Freetrade','Premium Bonds (NS&I)'];
+function accountSheet(id,mk){
+  const a=id?D('accounts').list.find(x=>x.id===id):{name:'',provider:'',type:'cash',monthly:'',note:''};if(!a)return;
+  const st={name:a.name,provider:a.provider||'',type:a.type||'cash',monthly:a.monthly||'',note:a.note||'',val:'',paid:id?(accPaidIn(a)??''):'',date:todayKey()};
+  liveSheet({kind:'acct',id,mk,a:st,draw(){const a=this.a,orig=id&&D('accounts').list.find(x=>x.id===id);
+    const hist=orig?(orig.history||[]).map((h,i)=>({h,i})).sort((x,y)=>x.h.date<y.h.date?1:-1):[];
+    const con=orig?(orig.contrib||[]).map((c,i)=>({c,i})).sort((x,y)=>x.c.date<y.c.date?1:-1):[];
+    return {title:id?'Edit account':'Add an account',body:`<div class="field"><span>Type</span><div class="chips">${Object.entries(ATYPES).map(([k,[l,e]])=>`<button class="chip sm ${a.type===k?'on':''}" data-a="aType" data-v="${k}">${e} ${l}</button>`).join('')}</div></div>
+    <div class="frow"><label class="field"><span>Name</span><input class="in" value="${esc(a.name)}" data-bind="a.name" placeholder="e.g. Stocks & shares ISA" autofocus></label><label class="field"><span>Provider</span><input class="in" value="${esc(a.provider)}" data-bind="a.provider" list="provs" placeholder="e.g. Trading 212"><datalist id="provs">${PROVIDERS.map(p=>`<option value="${esc(p)}">`).join('')}</datalist></label></div>
+    <div class="frow">${id?'':`<label class="field"><span>Worth today</span><input class="in" inputmode="decimal" value="${esc(a.val)}" data-bind="a.val"></label>`}<label class="field"><span>Paid in so far (optional)</span><input class="in" inputmode="decimal" value="${esc(a.paid)}" data-bind="a.paid"></label></div>
+    <p class="hint">Paid in is the total you’ve put in yourself. Add it to see your growth; for plain savings it shows interest earned.</p>
+    <label class="field"><span>Paying in each month (optional)</span><input class="in" inputmode="decimal" value="${esc(a.monthly)}" data-bind="a.monthly"></label>
+    <p class="hint">Shows in your budget to tick off. Include work share schemes taken from your pay too.</p>
+    <label class="field"><span>Notes</span><input class="in" value="${esc(a.note)}" data-bind="a.note" placeholder="e.g. Sharesave matures 2028"></label>
+    ${hist.length?`<div class="lbl" style="margin:14px 0 4px">Value history</div>${hist.map(({h,i})=>`<div class="trow sm"><span class="t">${fmtDay(h.date)}</span><b>${money(h.value)}</b><button class="x" data-a="snapDel" data-i="${i}" aria-label="Delete this value">×</button></div>`).join('')}`:''}
+    ${con.length?`<div class="lbl" style="margin:14px 0 4px">Payments in and out</div>${con.map(({c,i})=>`<div class="trow sm"><span class="t">${fmtDay(c.date)}${c.note?' · '+esc(c.note):''}</span><b class="${c.amt<0?'over':''}">${c.amt<0?'−':'+'}${money(Math.abs(c.amt))}</b><button class="x" data-a="contribDel" data-i="${i}" aria-label="Delete">×</button></div>`).join('')}`:''}`,
+    foot:foot('accSave',id?`<button class="btn danger" data-a="accDel">Delete</button>${skipBtn('a:'+id)}`:'')};}});
+}
+function accValSheet(id){const a=D('accounts').list.find(x=>x.id===id);if(!a)return;openSheet({kind:'accval',id,draw:()=>({title:'Update '+a.name,body:`<label class="field"><span>Worth today</span><input class="in" inputmode="decimal" name="val" value="${accValue(a)||''}" autofocus></label><label class="field"><span>Date</span><input class="in" type="date" name="date" value="${todayKey()}"></label><p class="hint">Check the ${esc(a.provider||'provider')} app and enter the total value shown.</p>`,foot:foot('accValSave')})});}
+function accMoneySheet(id,dir){const a=D('accounts').list.find(x=>x.id===id);if(!a)return;openSheet({kind:'accmoney',id,dir,draw:()=>({title:(dir>0?'Pay into ':'Take out of ')+a.name,body:`<div class="frow"><label class="field"><span>Amount</span><input class="in" inputmode="decimal" name="amt" autofocus></label><label class="field"><span>Date</span><input class="in" type="date" name="date" value="${todayKey()}"></label></div><label class="field"><span>Note (optional)</span><input class="in" name="note"></label><p class="hint">For one-offs. Regular monthly payments are quicker to tick off in your budget.</p>`,foot:foot('accMoneySave')})});}
+
 function amountSheet(title,hint,save,extra={}){openSheet(Object.assign({kind:'amount',draw:()=>({title,body:`<label class="field"><span>Amount</span><input class="in" inputmode="decimal" name="amt" autofocus></label>${hint?`<p class="hint">${hint}</p>`:''}<label class="field"><span>Note (optional)</span><input class="in" name="note"></label>`,foot:foot(save)})},extra));}
 function onceSheet(sec,id){
   const mo=D('mo-'+UI.mk), e=id?(mo.extra||[]).find(x=>x.id===id):{name:'',amt:''};if(!e)return;
   openSheet({kind:'once',sec:e.sec||sec,id,draw:()=>({title:(id?'Edit':'Add')+' for '+monthLabel(UI.mk)+' only',body:`<label class="field"><span>Name</span><input class="in" name="name" value="${esc(e.name)}" autofocus></label><label class="field"><span>Amount</span>${moneyIn('amt',e.amt)}</label>`,foot:foot('onceSave',id?'<button class="btn danger" data-a="onceDel">Delete</button>':'')})});
 }
-function quickSheet(){openSheet({kind:'quick',draw:()=>({title:'Add',body:`<div class="qa">${[['importStart','📥','Import statement'],['txNew','✏️','Transaction'],['qaBill','🧾','Bill'],['qaSub','📺','Subscription'],['potNew','🐷','Savings pot'],['debtNew','💳','Debt']].map(([a,e,l])=>`<button data-a="${a}"><span aria-hidden="true">${e}</span>${l}</button>`).join('')}</div>`})});}
+function quickSheet(){openSheet({kind:'quick',draw:()=>({title:'Add',body:`<div class="qa">${[['importStart','📥','Import statement'],['txNew','✏️','Transaction'],['qaBill','🧾','Bill'],['qaSub','📺','Subscription'],['potNew','🐷','Savings pot'],['accNew','📈','Account'],['debtNew','💳','Debt']].map(([a,e,l])=>`<button data-a="${a}"><span aria-hidden="true">${e}</span>${l}</button>`).join('')}</div>`})});}
 
 /* ================= money actions ================= */
 function closeDrawer(){$('#side').classList.remove('open');$('#scrim').classList.remove('on');}
@@ -1126,7 +1187,7 @@ function applyRule(match,cat){
   saveTouched(touched);return touched.size;
 }
 function nextReview(mk,afterId){const list=txOf(mk).filter(t=>!t.cat).sort((a,b)=>a.date<b.date?1:-1);return list.find(t=>t.id!==afterId)||null;}
-function linePlanAmt(key){const P=monthPlan(UI.mk);for(const k of ['income','bills','subs','savings','sinking','debts','limits']){const x=P[k].find(l=>l.key===key);if(x)return x.amt;}return 0;}
+function linePlanAmt(key){const P=monthPlan(UI.mk);for(const k of ['income','bills','subs','savings','sinking','invest','debts','limits']){const x=P[k].find(l=>l.key===key);if(x)return x.amt;}return 0;}
 const MA={
   closeSheet,
   go(el){if(SH){SH=null;$('#sheet').classList.remove('open');$('#sheet').innerHTML='';document.body.classList.remove('noscroll');}UI.view=el.dataset.v;if(el.dataset.tab)UI.setTab=el.dataset.tab;closeDrawer();saveUI();render();window.scrollTo(0,0);},
@@ -1145,9 +1206,9 @@ const MA={
     const P=monthPlan(UI.mk);let base=null;for(const k in P){if(!Array.isArray(P[k]))continue;const x=P[k].find(l=>l.key===key);if(x){base=x.base;break;}}
     if(key.startsWith('x:')){const e=(mo.extra||[]).find(x=>'x:'+x.id===key);if(e)e.amt=v;}else if(base!=null&&v===round(base,2))delete mo.amt[key];else mo.amt[key]=v;
     if(mo.paid&&mo.paid[key])mo.paid[key].a=v;save('mo-'+UI.mk);render();},
-  addLine(el){const s=el.dataset.sec;if(s==='income')incomeSheet();else if(s==='bills')billSheet(null,'bill');else if(s==='subs')billSheet(null,'sub');else if(s==='savings')potSheet(null,'goal');else if(s==='sinking')potSheet(null,'sinking');else if(s==='debts')debtSheet();},
+  addLine(el){const s=el.dataset.sec;if(s==='income')incomeSheet();else if(s==='bills')billSheet(null,'bill');else if(s==='subs')billSheet(null,'sub');else if(s==='savings')potSheet(null,'goal');else if(s==='sinking')potSheet(null,'sinking');else if(s==='debts')debtSheet();else if(s==='invest')accountSheet();},
   addOnce(el){onceSheet(el.dataset.sec);},
-  editLine(el){const [p,id]=el.dataset.key.split(':'),mk=UI.mk;if(p==='i')incomeSheet(id,mk);else if(p==='b')billSheet(id,null,mk);else if(p==='p')potSheet(id,null,mk);else if(p==='d')debtSheet(id,mk);else if(p==='c'){UI.view='settings';UI.setTab='cats';render();window.scrollTo(0,0);}else if(p==='x')onceSheet(null,id);},
+  editLine(el){const [p,id]=el.dataset.key.split(':'),mk=UI.mk;if(p==='i')incomeSheet(id,mk);else if(p==='b')billSheet(id,null,mk);else if(p==='p')potSheet(id,null,mk);else if(p==='d')debtSheet(id,mk);else if(p==='a')accountSheet(id,mk);else if(p==='c'){UI.view='settings';UI.setTab='cats';render();window.scrollTo(0,0);}else if(p==='x')onceSheet(null,id);},
   skipMonth(el){const mo=D('mo-'+SH.mk);mo.skip=mo.skip||{};mo.skip[el.dataset.key]=true;if(mo.paid)delete mo.paid[el.dataset.key];save('mo-'+SH.mk);toast('Removed from '+monthLabel(SH.mk));closeSheet();},
   onceSave(){const name=fv('name').trim(),amt=num(fv('amt'));if(!name){toast('Give it a name');return;}const mo=D('mo-'+UI.mk);mo.extra=mo.extra||[];if(SH.id){const e=mo.extra.find(x=>x.id===SH.id);if(e)Object.assign(e,{name,amt});}else mo.extra.push({id:uid(),sec:SH.sec,name,amt});save('mo-'+UI.mk);closeSheet();},
   onceDel(){const mo=D('mo-'+UI.mk);mo.extra=(mo.extra||[]).filter(x=>x.id!==SH.id);if(mo.paid)delete mo.paid['x:'+SH.id];save('mo-'+UI.mk);closeSheet();},
@@ -1180,6 +1241,22 @@ const MA={
   debtPaySave(){const a=num(fv('amt'));if(!a){toast('Enter an amount');return;}const d=D('debts').list.find(x=>x.id===SH.did);if(d){d.adj=d.adj||[];d.adj.push({id:uid(),amt:a,date:todayKey(),t:Date.now(),note:fv('note')});save('debts');}closeSheet();},
   debtSet(el){const d=D('debts').list.find(x=>x.id===el.dataset.id);openSheet({kind:'dset',did:el.dataset.id,draw:()=>({title:'Update balance',body:`<label class="field"><span>Balance on your latest statement</span>${moneyIn('amt',debtBal(d),'autofocus')}</label><p class="hint">This resets the tracked balance so it includes any interest charged.</p>`,foot:foot('debtSetSave')})});},
   debtSetSave(){const d=D('debts').list.find(x=>x.id===SH.did);if(d){d.start=num(fv('amt'));d.startT=Date.now();save('debts');}closeSheet();},
+
+  // accounts
+  accNew(){accountSheet();}, accEdit(el){accountSheet(el.dataset.id);},
+  aType(el){SH.a.type=el.dataset.v;drawSheet();},
+  accSave(){const a=SH.a;a.name=(a.name||'').trim();if(!a.name){toast('Give the account a name');return;}const L=D('accounts');
+    if(SH.id){const o=L.list.find(x=>x.id===SH.id);if(!o)return closeSheet();Object.assign(o,{name:a.name,provider:(a.provider||'').trim(),type:a.type,monthly:num(a.monthly),note:(a.note||'').trim()});
+      if(String(a.paid).trim()==='')o.startPaid='';else{const sumC=accContribs(o).reduce((s,c)=>s+c.amt,0);o.startPaid=round(num(a.paid)-sumC,2);}}
+    else{if(String(a.val).trim()===''){toast('Add what it’s worth today');return;}const n={id:uid(),name:a.name,provider:(a.provider||'').trim(),type:a.type,monthly:num(a.monthly),note:(a.note||'').trim(),startPaid:String(a.paid).trim()===''?'':num(a.paid),history:[{date:todayKey(),value:num(a.val),t:Date.now()}],contrib:[],from:curMonth()};L.list.push(n);}
+    save('accounts');toast('Saved');closeSheet();},
+  accDel(){if(SH.confirm!==1){SH.confirm=1;toast('Tap Delete again to remove this account');return;}const L=D('accounts'),a=L.list.find(x=>x.id===SH.id);if(a)L.list=endOrRemove(L.list,a);save('accounts');closeSheet();},
+  snapDel(el){const o=D('accounts').list.find(x=>x.id===SH.id);if(!o)return;if((o.history||[]).length<=1){toast('Keep at least one value');return;}o.history.splice(+el.dataset.i,1);save('accounts');drawSheet();},
+  contribDel(el){const o=D('accounts').list.find(x=>x.id===SH.id);if(!o)return;o.contrib.splice(+el.dataset.i,1);save('accounts');drawSheet();},
+  accVal(el){accValSheet(el.dataset.id);},
+  accValSave(){const v=numOrNull(fv('val')),d=fv('date')||todayKey();if(v==null){toast('Enter the value');return;}const a=D('accounts').list.find(x=>x.id===SH.id);if(a){a.history=a.history||[];a.history.push({date:d,value:v,t:Date.now()});save('accounts');toast('Value updated');}closeSheet();},
+  accMoney(el){accMoneySheet(el.dataset.id,+el.dataset.dir);},
+  accMoneySave(){const amt=num(fv('amt'));if(!amt){toast('Enter an amount');return;}const a=D('accounts').list.find(x=>x.id===SH.id);if(a){a.contrib=a.contrib||[];a.contrib.push({id:uid(),amt:SH.dir*Math.abs(amt),date:fv('date')||todayKey(),t:Date.now(),note:fv('note').trim()});save('accounts');toast(SH.dir>0?'Paid in':'Taken out');}closeSheet();},
   // transactions
   importStart(){importSheet();},
   importFile(el){const f=el.files&&el.files[0];if(!f)return;const rd=new FileReader();rd.onload=()=>{const rows=parseCSV(rd.result);if(rows.length<2){toast('That file looks empty');return;}const m=guessMap(rows);const sig=m.head.join('|').toLowerCase();const saved=S().imports[sig];if(saved)Object.assign(m,saved,{hi:m.hi,head:m.head});SH.rows=rows;SH.map=m;SH.sig=sig;SH.step='map';drawSheet();};rd.readAsText(f);},
